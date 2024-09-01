@@ -17,7 +17,7 @@ This does is a few things:
     cargo build --release
     ```
 
-2. The binary requires an extra permission CAP_NET_ADMIN to create network interfaces on linux.
+2. The binary requires an extra permission, `CAP_NET_ADMIN`, to create network interfaces on linux.
 
     ```shell
     sudo setcap cap_net_admin=eip ./target/release/tcp_rs
