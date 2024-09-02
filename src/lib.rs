@@ -1,4 +1,3 @@
-pub mod models;
 pub mod tcp;
 
 /// Buffer size to store a packet and its header in bytes
