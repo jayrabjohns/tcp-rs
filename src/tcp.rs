@@ -1,4 +1,4 @@
-use std::{io, net::Ipv4Addr};
+use std::{cmp::Ordering, io, net::Ipv4Addr};
 
 use etherparse::{IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
 use tun_tap::Iface;
@@ -73,6 +73,7 @@ pub struct Tcb {
     state: State,
     recv: RecvSequenceVariables,
     send: SendSequenceVariables,
+    send_ip_header: Ipv4Header,
 }
 
 impl Tcb {
@@ -82,7 +83,7 @@ impl Tcb {
         tcp_header: TcpHeaderSlice,
         data: &[u8],
     ) -> io::Result<Option<Self>> {
-        eprintln!(
+        println!(
             "{} -> {}:{} {}b of TCP",
             ip_header.source_addr(),
             ip_header.destination_addr(),
@@ -96,15 +97,15 @@ impl Tcb {
         }
 
         let iss = 0;
-        let tcb = Tcb {
-            state: State::SynRcvd,
-            recv: RecvSequenceVariables {
+
+        let recv = RecvSequenceVariables {
                 irs: tcp_header.sequence_number(),
                 nxt: tcp_header.sequence_number() + 1,
                 wnd: tcp_header.window_size(),
                 up: false,
-            },
-            send: SendSequenceVariables {
+        };
+
+        let send = SendSequenceVariables {
                 iss,
                 una: iss + 1,
                 nxt: iss + 1,
@@ -112,43 +113,36 @@ impl Tcb {
                 up: false,
                 wl1: 0,
                 wl2: 0,
-            },
         };
 
-        let mut syn_ack = TcpHeader {
+        let syn_ack_tcp_header = TcpHeader {
             source_port: tcp_header.destination_port(),
             destination_port: tcp_header.source_port(),
-            acknowledgment_number: tcb.recv.nxt,
-            sequence_number: tcb.send.iss,
-            window_size: tcb.send.wnd,
+            acknowledgment_number: recv.nxt,
+            sequence_number: send.iss,
+            window_size: send.wnd,
             syn: true,
             ack: true,
             ..Default::default()
         };
 
-        let response_ip_payload_len: u16 = syn_ack.header_len_u16();
-        let response_time_to_live: u8 = 64;
-        let response_protocol: IpNumber = IpNumber::TCP;
-        let response_source: [u8; 4] = ip_header.destination();
-        let response_destination: [u8; 4] = ip_header.source();
+        let send_ip_header_payload_len: u16 = syn_ack_tcp_header.header_len_u16();
+        let send_ip_header_ttl: u8 = 64;
+        let send_ip_header_protocol: IpNumber = IpNumber::TCP;
+        let send_ip_header_source: [u8; 4] = ip_header.destination();
+        let send_ip_header_destination: [u8; 4] = ip_header.source();
 
-        let response_ip_header = Ipv4Header::new(
-            response_ip_payload_len,
-            response_time_to_live,
-            response_protocol,
-            response_source,
-            response_destination,
+        let send_ip_header = Ipv4Header::new(
+            send_ip_header_payload_len,
+            send_ip_header_ttl,
+            send_ip_header_protocol,
+            send_ip_header_source,
+            send_ip_header_destination,
         )
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-        let tcp_payload: &[u8] = &[];
-
-        syn_ack.checksum = syn_ack
-            .calc_checksum_ipv4(&response_ip_header, tcp_payload)
-            .map_err(|err| io::Error::other(err))?;
-
-        eprintln!("Received ip header: \n{:02x?}", ip_header.slice());
-        eprintln!("Received tcp header: \n{:02x?}", tcp_header.slice());
+        println!("Received ip header: \n{:02x?}", ip_header.slice());
+        println!("Received tcp header: \n{:02x?}", tcp_header.slice());
 
         let mut buf: [u8; ETH_MTU] = [0; ETH_MTU];
         let num_written_bytes: usize = {
@@ -156,18 +150,25 @@ impl Tcb {
 
             let mut unwritten_bytes: &mut [u8] = &mut buf[..];
 
-            response_ip_header.write(&mut unwritten_bytes)?;
+            send_ip_header.write(&mut unwritten_bytes)?;
 
-            syn_ack.write(&mut unwritten_bytes)?;
+            syn_ack_tcp_header.write(&mut unwritten_bytes)?;
 
             buf_len - unwritten_bytes.len()
         };
 
         let response: &[u8] = &buf[..num_written_bytes];
 
-        eprintln!("Response ({num_written_bytes}b): \n{:02x?}", response);
+        println!("Response ({num_written_bytes}b): \n{:02x?}", response);
 
         nic.send(response)?;
+
+        let tcb = Tcb {
+            state: State::SynRcvd,
+            send,
+            recv,
+            send_ip_header,
+        };
 
         return Ok(Some(tcb));
     }
