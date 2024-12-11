@@ -84,7 +84,7 @@ pub struct Tcb {
 
 impl Tcb {
     pub fn accept_connection(
-        mut nic: &Iface,
+        nic: &Iface,
         ip_header: Ipv4HeaderSlice,
         tcp_header: TcpHeaderSlice,
         data: &[u8],
@@ -145,8 +145,7 @@ impl Tcb {
             send_ip_header_protocol,
             send_ip_header_source,
             send_ip_header_destination,
-        )
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        )?;
 
         println!("Received ip header: \n{:02x?}", ip_header.slice());
         println!("Received tcp header: \n{:02x?}", tcp_header.slice());
@@ -171,43 +170,150 @@ impl Tcb {
         tcp_header: TcpHeaderSlice,
         data: &[u8],
     ) -> Result<()> {
-        // Check ack is valid. una < ack <= nxt (but with wrapping arithmatic)
-        if !is_between_values_wrapped(
-            tcp_header.acknowledgment_number(),
-            self.send.una,
-            self.send.nxt.wrapping_add(1),
-        ) {
-            if !self.state.is_synchronised() {
-                self.send_tcp_header.sequence_number = tcp_header.acknowledgment_number();
-                self.send_rst(nic)?;
-            }
-            return Ok(());
-        }
-
         if !self.is_segment_valid(&tcp_header, data) {
             return Ok(());
         }
 
-        match self.state {
-            State::SynRcvd => {
-                if !tcp_header.ack() {
-                    return Ok(());
-                }
+        if !tcp_header.ack() {
+            return Ok(());
+        }
 
+        let ackn = tcp_header.acknowledgment_number();
+
+        if let State::SynRcvd = self.state {
+            if !is_between_values_wrapped(
+                ackn,
+                self.send.una.wrapping_sub(1),
+                self.send.nxt.wrapping_add(1),
+            ) {
                 self.state = State::Estab;
-                self.send_tcp_header.fin = true; //TODO: store in retransmission queue
-                self.write(nic, &[])?;
-                self.state = State::FinWait;
-            }
-            State::Estab => {
-                if !tcp_header.fin() || !data.is_empty() {
-                    todo!()
-                }
-
-                self.write(nic, &[])?;
-                self.state = State::CloseWait;
+            } else {
+                // TODO: reset
             }
         }
+
+        // Check ack is valid. una < ack <= nxt (but with wrapping arithmatic)
+        if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
+            // if !self.state.is_synchronised() {
+            //     self.send_tcp_header.sequence_number = ackn;
+            //     self.send_rst(nic)?;
+            // }
+
+            self.send_rst(nic)?;
+
+            return Ok(());
+        }
+        self.send.una = ackn;
+
+        //
+
+        if let State::Estab = self.state {
+            if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
+                return Ok(());
+            }
+
+            self.send.una = ackn;
+
+            assert!(data.is_empty());
+
+            self.send_tcp_header.fin = true; //TODO: store in retransmission queue
+            self.write(nic, &[])?;
+            self.state = State::FinWait1;
+        }
+
+        if let State::FinWait1 = self.state {
+            // Checking ack for both the SYN initially sent and the FIN
+            if self.send.una == self.send.iss + 2 {
+                self.state = State::FinWait2
+            }
+
+            // // Should be estab generally but for this example must be finwait1
+            // if !tcp_header.fin() || !data.is_empty() {
+            //     todo!()
+            // }
+
+            // Specific to this example.
+            // At this point, they must have acknowledged our FIN byte,
+            // since we detect an acked byte and have only sent one byte
+
+            self.state = State::FinWait2;
+        }
+
+        if tcp_header.fin() {
+            if let State::FinWait2 = self.state {
+                self.write(nic, &[])?;
+                self.state = State::TimeWait;
+            }
+        }
+
+        // if let State::FinWait2 = self.state {
+        //     // Checking ack for both the SYN initially sent and the FIN
+        //     if !tcp_header.fin() || !data.is_empty() {
+        //         todo!()
+        //     }
+
+        //     // // Should be estab generally but for this example must be finwait1
+        //     // if !tcp_header.fin() || !data.is_empty() {
+        //     //     todo!()
+        //     // }
+
+        //     // Specific to this example.
+        //     // At this point, they must have acknowledged our FIN byte,
+        //     // since we detect an acked byte and have only sent one byte
+
+        //     self.send_tcp_header.fin = false; // https://youtu.be/bzja9fQWzdA?feature=shared&t=16161
+        //     self.write(nic, &[])?;
+        //     self.state = State::Closing;
+        // }
+
+        // match self.state {
+        //     State::SynRcvd => unreachable!(),
+        //     // State::SynRcvd => {
+        //     // if !is_between_values_wrapped(
+        //     //     ackn,
+        //     //     self.send.una.wrapping_sub(1),
+        //     //     self.send.nxt.wrapping_add(1),
+        //     // ) {
+        //     //     self.state = State::Estab;
+        //     // } else {
+        //     //     // TODO: reset
+        //     // }
+
+        //     // if !tcp_header.ack() {
+        //     //     return Ok(());
+        //     // }
+
+        //     // self.send_tcp_header.fin = true; //TODO: store in retransmission queue
+        //     // self.write(nic, &[])?;
+        //     // self.state = State::FinWait1;
+        //     // }
+        //     State::Estab => unreachable!(),
+        //     State::FinWait1 => unreachable!(),
+        //     State::FinWait2 => {
+        //         // Should be estab generally but for this example must be finwait1
+        //         if !tcp_header.fin() || !data.is_empty() {
+        //             todo!()
+        //         }
+
+        //         // Specific to this example.
+        //         // At this point, they must have acknowledged our FIN byte,
+        //         // since we detect an acked byte and have only sent one byte
+
+        //         self.send_tcp_header.fin = false; // https://youtu.be/bzja9fQWzdA?feature=shared&t=16161
+        //         self.write(nic, &[])?;
+        //         self.state = State::Closing;
+        //     }
+        //     State::Closing => {
+        //         if !tcp_header.fin() || !data.is_empty() {
+        //             todo!()
+        //         }
+
+        //         self.state = State::FinWait2;
+        //         self.send_tcp_header.fin = false;
+        //         self.write(nic, &[])?;
+        //         self.state = State::Closing;
+        //     }
+        // }
 
         Ok(())
     }
@@ -235,8 +341,9 @@ impl Tcb {
     ///     >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
     ///                 or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
     /// ```
-    fn is_segment_valid(&self, tcp_header: &TcpHeaderSlice, data: &[u8]) -> bool {
+    fn is_segment_valid(&mut self, tcp_header: &TcpHeaderSlice, data: &[u8]) -> bool {
         let seqn = tcp_header.sequence_number();
+
         let seg_len: u32 = {
             let mut slen = data.len();
             if tcp_header.fin() {
@@ -248,9 +355,10 @@ impl Tcb {
             }
             slen as u32
         };
+
         let window = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
 
-        if seg_len == 0 {
+        let is_valid = if seg_len == 0 {
             if self.recv.wnd == 0 {
                 seqn == self.recv.nxt
             } else {
@@ -262,12 +370,19 @@ impl Tcb {
             } else {
                 is_between_values_wrapped(seqn, self.recv.nxt.wrapping_sub(1), window)
                     || is_between_values_wrapped(
-                        seqn + seg_len - 1,
+                        seqn.wrapping_add(seg_len - 1),
                         self.recv.nxt.wrapping_sub(1),
                         window,
                     )
             }
-        }
+        };
+
+        self.recv.nxt = seqn.wrapping_add(seg_len);
+        // TODO ensure this is acked
+
+        // TODO if the received sequence number is not acceptable we need to send an ack back.
+
+        is_valid
     }
 
     fn write(&mut self, nic: &Iface, payload: &[u8]) -> Result<usize> {
@@ -321,6 +436,7 @@ impl Tcb {
 
     fn send_rst(&mut self, nic: &Iface) -> Result<()> {
         // TODO fix sequence numbers
+        // TODO handle synchronised reset
         self.send_tcp_header.rst = true;
         self.send_tcp_header.sequence_number = 0;
         self.send_tcp_header.acknowledgment_number = 0;
@@ -358,8 +474,9 @@ pub enum State {
     // Listen,
     SynRcvd,
     Estab,
-    FinWait,
-    CloseWait,
+    FinWait1,
+    FinWait2,
+    TimeWait,
 }
 
 impl State {
@@ -368,7 +485,7 @@ impl State {
 
         match self {
             SynRcvd => false,
-            Estab | FinWait | CloseWait => true,
+            Estab | FinWait1 | FinWait2 | TimeWait => true,
         }
     }
 }
