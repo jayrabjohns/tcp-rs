@@ -70,7 +70,7 @@ This does is a few things:
 
 7. We can verify this works by sending some traffic to and address of the subnet mask we defined earlier
     ```shell
-    ping 192.168.0.2
+    nc 192.168.0.2 443
     ```
 
     If tshark is installed we can see these packets being delivered 
