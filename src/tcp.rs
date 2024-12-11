@@ -103,7 +103,7 @@ impl Tcb {
         }
 
         let iss = 0;
-        let wnd = 10;
+        let wnd = 1024;
 
         let recv = RecvSequenceVariables {
             irs: tcp_header.sequence_number(),
@@ -171,6 +171,7 @@ impl Tcb {
         data: &[u8],
     ) -> Result<()> {
         if !self.is_segment_valid(&tcp_header, data) {
+            self.write(nic, &[])?; // https://youtu.be/bzja9fQWzdA?feature=shared&t=17048
             return Ok(());
         }
 
@@ -181,7 +182,7 @@ impl Tcb {
         let ackn = tcp_header.acknowledgment_number();
 
         if let State::SynRcvd = self.state {
-            if !is_between_values_wrapped(
+            if is_between_values_wrapped(
                 ackn,
                 self.send.una.wrapping_sub(1),
                 self.send.nxt.wrapping_add(1),
@@ -192,22 +193,22 @@ impl Tcb {
             }
         }
 
-        // Check ack is valid. una < ack <= nxt (but with wrapping arithmatic)
-        if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
-            // if !self.state.is_synchronised() {
-            //     self.send_tcp_header.sequence_number = ackn;
-            //     self.send_rst(nic)?;
-            // }
+        // // Check ack is valid. una < ack <= nxt (but with wrapping arithmatic)
+        // if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
+        //     // if !self.state.is_synchronised() {
+        //     //     self.send_tcp_header.sequence_number = ackn;
+        //     //     self.send_rst(nic)?;
+        //     // }
 
-            self.send_rst(nic)?;
+        //     self.send_rst(nic)?;
 
-            return Ok(());
-        }
-        self.send.una = ackn;
+        //     return Ok(());
+        // }
+        // self.send.una = ackn;
 
         //
 
-        if let State::Estab = self.state {
+        if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
             if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
                 return Ok(());
             }
@@ -215,7 +216,9 @@ impl Tcb {
             self.send.una = ackn;
 
             assert!(data.is_empty());
+        }
 
+        if let State::Estab = self.state {
             self.send_tcp_header.fin = true; //TODO: store in retransmission queue
             self.write(nic, &[])?;
             self.state = State::FinWait1;
@@ -236,7 +239,7 @@ impl Tcb {
             // At this point, they must have acknowledged our FIN byte,
             // since we detect an acked byte and have only sent one byte
 
-            self.state = State::FinWait2;
+            // self.state = State::FinWait2;
         }
 
         if tcp_header.fin() {
@@ -396,10 +399,15 @@ impl Tcb {
             self.send_tcp_header.header_len() + self.send_ip_header.header_len() + payload.len(),
         );
 
-        self.send_ip_header.set_payload_len(size)?;
-
         self.send_ip_header
-            .set_payload_len(self.send_tcp_header.header_len() + payload.len())?;
+            .set_payload_len(size - self.send_ip_header.header_len())?;
+
+        // self.send_ip_header
+        //     .set_payload_len(self.send_tcp_header.header_len() + payload.len())?;
+
+        self.send_tcp_header.checksum = self
+            .send_tcp_header
+            .calc_checksum_ipv4(&self.send_ip_header, &[])?;
 
         let buf_len: usize = buf.len();
 
