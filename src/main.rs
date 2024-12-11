@@ -1,9 +1,9 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
-    io,
     net::Ipv4Addr,
 };
 
+use anyhow::Result;
 use etherparse::{IpNumber, Ipv4HeaderSlice, TcpHeaderSlice};
 use tun_tap::{Iface, Mode};
 
@@ -12,7 +12,7 @@ use tcp_rs::{
     PACKET_BUF_SIZE,
 };
 
-fn main() -> io::Result<()> {
+fn main() -> Result<()> {
     let mut connections = HashMap::<ConnectInfo, Tcb>::default();
 
     let nic = Iface::without_packet_info("tun0", Mode::Tun)?;
