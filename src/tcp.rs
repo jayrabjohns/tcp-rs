@@ -1,8 +1,4 @@
-use std::{
-    cmp::Ordering,
-    io::{self, Write},
-    net::Ipv4Addr,
-};
+use std::{cmp::Ordering, io::Write, net::Ipv4Addr};
 
 use anyhow::Result;
 use etherparse::{IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice};
@@ -171,7 +167,8 @@ impl Tcb {
         data: &[u8],
     ) -> Result<()> {
         if !self.is_segment_valid(&tcp_header, data) {
-            self.write(nic, &[])?; // https://youtu.be/bzja9fQWzdA?feature=shared&t=17048
+            // https://youtu.be/OCpt1I0MWXE?feature=shared&t=329
+            self.write(nic, &[])?;
             return Ok(());
         }
 
@@ -193,22 +190,8 @@ impl Tcb {
             }
         }
 
-        // // Check ack is valid. una < ack <= nxt (but with wrapping arithmatic)
-        // if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
-        //     // if !self.state.is_synchronised() {
-        //     //     self.send_tcp_header.sequence_number = ackn;
-        //     //     self.send_rst(nic)?;
-        //     // }
-
-        //     self.send_rst(nic)?;
-
-        //     return Ok(());
-        // }
-        // self.send.una = ackn;
-
-        //
-
         if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
+            // Check ack is valid. una < ack <= nxt (but with wrapping arithmatic)
             if !is_between_values_wrapped(ackn, self.send.una, self.send.nxt.wrapping_add(1)) {
                 return Ok(());
             }
@@ -229,17 +212,6 @@ impl Tcb {
             if self.send.una == self.send.iss + 2 {
                 self.state = State::FinWait2
             }
-
-            // // Should be estab generally but for this example must be finwait1
-            // if !tcp_header.fin() || !data.is_empty() {
-            //     todo!()
-            // }
-
-            // Specific to this example.
-            // At this point, they must have acknowledged our FIN byte,
-            // since we detect an acked byte and have only sent one byte
-
-            // self.state = State::FinWait2;
         }
 
         if tcp_header.fin() {
@@ -249,74 +221,67 @@ impl Tcb {
             }
         }
 
-        // if let State::FinWait2 = self.state {
-        //     // Checking ack for both the SYN initially sent and the FIN
-        //     if !tcp_header.fin() || !data.is_empty() {
-        //         todo!()
-        //     }
+        Ok(())
+    }
 
-        //     // // Should be estab generally but for this example must be finwait1
-        //     // if !tcp_header.fin() || !data.is_empty() {
-        //     //     todo!()
-        //     // }
+    fn write(&mut self, nic: &Iface, payload: &[u8]) -> Result<usize> {
+        let mut buf: [u8; ETH_MTU] = [0; ETH_MTU];
 
-        //     // Specific to this example.
-        //     // At this point, they must have acknowledged our FIN byte,
-        //     // since we detect an acked byte and have only sent one byte
+        self.send_tcp_header.sequence_number = self.send.nxt;
+        self.send_tcp_header.acknowledgment_number = self.recv.nxt;
 
-        //     self.send_tcp_header.fin = false; // https://youtu.be/bzja9fQWzdA?feature=shared&t=16161
-        //     self.write(nic, &[])?;
-        //     self.state = State::Closing;
-        // }
+        let size = std::cmp::min(
+            buf.len(),
+            self.send_tcp_header.header_len() + self.send_ip_header.header_len() + payload.len(),
+        );
 
-        // match self.state {
-        //     State::SynRcvd => unreachable!(),
-        //     // State::SynRcvd => {
-        //     // if !is_between_values_wrapped(
-        //     //     ackn,
-        //     //     self.send.una.wrapping_sub(1),
-        //     //     self.send.nxt.wrapping_add(1),
-        //     // ) {
-        //     //     self.state = State::Estab;
-        //     // } else {
-        //     //     // TODO: reset
-        //     // }
+        self.send_ip_header
+            .set_payload_len(size - self.send_ip_header.header_len())?;
 
-        //     // if !tcp_header.ack() {
-        //     //     return Ok(());
-        //     // }
+        self.send_tcp_header.checksum = self
+            .send_tcp_header
+            .calc_checksum_ipv4(&self.send_ip_header, &[])?;
 
-        //     // self.send_tcp_header.fin = true; //TODO: store in retransmission queue
-        //     // self.write(nic, &[])?;
-        //     // self.state = State::FinWait1;
-        //     // }
-        //     State::Estab => unreachable!(),
-        //     State::FinWait1 => unreachable!(),
-        //     State::FinWait2 => {
-        //         // Should be estab generally but for this example must be finwait1
-        //         if !tcp_header.fin() || !data.is_empty() {
-        //             todo!()
-        //         }
+        let buf_len: usize = buf.len();
 
-        //         // Specific to this example.
-        //         // At this point, they must have acknowledged our FIN byte,
-        //         // since we detect an acked byte and have only sent one byte
+        let mut unwritten_bytes: &mut [u8] = &mut buf[..];
 
-        //         self.send_tcp_header.fin = false; // https://youtu.be/bzja9fQWzdA?feature=shared&t=16161
-        //         self.write(nic, &[])?;
-        //         self.state = State::Closing;
-        //     }
-        //     State::Closing => {
-        //         if !tcp_header.fin() || !data.is_empty() {
-        //             todo!()
-        //         }
+        self.send_ip_header.write(&mut unwritten_bytes)?;
 
-        //         self.state = State::FinWait2;
-        //         self.send_tcp_header.fin = false;
-        //         self.write(nic, &[])?;
-        //         self.state = State::Closing;
-        //     }
-        // }
+        self.send_tcp_header.write(&mut unwritten_bytes)?;
+
+        let payload_bytes: usize = unwritten_bytes.write(payload)?;
+
+        let num_written_bytes: usize = buf_len - unwritten_bytes.len();
+
+        let response: &[u8] = &buf[..num_written_bytes];
+
+        self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
+
+        if self.send_tcp_header.syn {
+            self.send.nxt = self.send.nxt.wrapping_add(1);
+            self.send_tcp_header.syn = false;
+        }
+
+        if self.send_tcp_header.fin {
+            self.send.nxt = self.send.nxt.wrapping_add(1);
+            self.send_tcp_header.fin = false;
+        }
+
+        nic.send(response)?;
+
+        println!("Response ({num_written_bytes}b): \n{:02x?}", response);
+
+        Ok(payload_bytes)
+    }
+
+    fn send_rst(&mut self, nic: &Iface) -> Result<()> {
+        // TODO fix sequence numbers
+        // TODO handle synchronised reset
+        self.send_tcp_header.rst = true;
+        self.send_tcp_header.sequence_number = 0;
+        self.send_tcp_header.acknowledgment_number = 0;
+        self.write(nic, &[])?;
 
         Ok(())
     }
@@ -387,71 +352,6 @@ impl Tcb {
 
         is_valid
     }
-
-    fn write(&mut self, nic: &Iface, payload: &[u8]) -> Result<usize> {
-        let mut buf: [u8; ETH_MTU] = [0; ETH_MTU];
-
-        self.send_tcp_header.sequence_number = self.send.nxt;
-        self.send_tcp_header.acknowledgment_number = self.recv.nxt;
-
-        let size = std::cmp::min(
-            buf.len(),
-            self.send_tcp_header.header_len() + self.send_ip_header.header_len() + payload.len(),
-        );
-
-        self.send_ip_header
-            .set_payload_len(size - self.send_ip_header.header_len())?;
-
-        // self.send_ip_header
-        //     .set_payload_len(self.send_tcp_header.header_len() + payload.len())?;
-
-        self.send_tcp_header.checksum = self
-            .send_tcp_header
-            .calc_checksum_ipv4(&self.send_ip_header, &[])?;
-
-        let buf_len: usize = buf.len();
-
-        let mut unwritten_bytes: &mut [u8] = &mut buf[..];
-
-        self.send_ip_header.write(&mut unwritten_bytes)?;
-
-        self.send_tcp_header.write(&mut unwritten_bytes)?;
-
-        let payload_bytes: usize = unwritten_bytes.write(payload)?;
-
-        let num_written_bytes: usize = buf_len - unwritten_bytes.len();
-
-        let response: &[u8] = &buf[..num_written_bytes];
-
-        self.send.nxt = self.send.nxt.wrapping_add(payload_bytes as u32);
-
-        if self.send_tcp_header.syn {
-            self.send.nxt = self.send.nxt.wrapping_add(1);
-            self.send_tcp_header.syn = false;
-        }
-
-        if self.send_tcp_header.fin {
-            self.send.nxt = self.send.nxt.wrapping_add(1);
-            self.send_tcp_header.fin = false;
-        }
-
-        nic.send(response)?;
-
-        println!("Response ({num_written_bytes}b): \n{:02x?}", response);
-
-        Ok(payload_bytes)
-    }
-
-    fn send_rst(&mut self, nic: &Iface) -> Result<()> {
-        // TODO fix sequence numbers
-        // TODO handle synchronised reset
-        self.send_tcp_header.rst = true;
-        self.send_tcp_header.sequence_number = 0;
-        self.send_tcp_header.acknowledgment_number = 0;
-        self.write(nic, &[])?;
-
-        Ok(())
-    }
 }
 
 /// lower < value < upper
@@ -478,8 +378,6 @@ fn is_between_values_wrapped(value: u32, start: u32, end: u32) -> bool {
 
 #[derive(Clone, Copy)]
 pub enum State {
-    // Closed,
-    // Listen,
     SynRcvd,
     Estab,
     FinWait1,
