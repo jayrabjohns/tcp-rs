@@ -8,9 +8,13 @@ Aiming to implement most of the core functionality in [RFC 793](https://www.rfc-
 
 ## Running locally
 
-Run `./scripts/run.sh`
+1. Run `./scripts/run.sh`
+2. Talk to the network interface, e.g.    
+```shell
+nc 192.168.0.2 443
+```
 
-This does is a few things:
+The script `run.sh` does the following.
 
 1. Build binary
     ```shell

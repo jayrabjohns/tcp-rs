@@ -22,18 +22,6 @@ fn main() -> Result<()> {
     loop {
         let n_bytes: usize = nic.recv(&mut buf[..])?;
 
-        // println!("Received bytes: {:02x?}", &buf[..n_bytes]);
-
-        // assert!(n_bytes >= ETH_HEADER_SIZE);
-
-        // Network order is big endian
-        // let _eth_flags = u16::from_be_bytes([buf[0], buf[1]]);
-        // let eth_proto = u16::from_be_bytes([buf[2], buf[3]]);
-
-        // if eth_proto != EtherType::Ipv4 as u16 {
-        //     continue;
-        // }
-
         match Ipv4HeaderSlice::from_slice(&buf[..n_bytes]) {
             Ok(ipv4_header) => {
                 let src: Ipv4Addr = ipv4_header.source_addr();
